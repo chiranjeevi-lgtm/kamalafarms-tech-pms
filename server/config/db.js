@@ -1,9 +1,7 @@
-const Database = require('better-sqlite3');
+const initSqlJs = require('sql.js');
 const path = require('path');
 const fs = require('fs');
 
-// On Vercel, filesystem is read-only except /tmp
-// Use /tmp for SQLite database in serverless mode
 const isVercel = !!process.env.VERCEL;
 const DB_PATH = process.env.DB_PATH
   || (isVercel ? '/tmp/agritech.db' : path.join(__dirname, '..', 'data', 'agritech.db'));
@@ -14,37 +12,74 @@ if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
-// On Vercel: auto-initialize DB on cold start if it doesn't exist in /tmp
-if (isVercel && !fs.existsSync(DB_PATH)) {
-  console.log('Vercel cold start: initializing database in /tmp...');
-  const setupDb = require('../scripts/setupDb');
+// sql.js requires async init — we cache the DB instance
+let db = null;
+let dbReady = null;
+
+function getDbPromise() {
+  if (dbReady) return dbReady;
+  dbReady = (async () => {
+    const SQL = await initSqlJs();
+
+    // On Vercel cold start, run setupDb if no file exists
+    if (isVercel && !fs.existsSync(DB_PATH)) {
+      console.log('Vercel cold start: initializing database in /tmp...');
+      const setupDatabase = require('../scripts/setupDb');
+      await setupDatabase();
+    }
+
+    if (fs.existsSync(DB_PATH)) {
+      const buffer = fs.readFileSync(DB_PATH);
+      db = new SQL.Database(buffer);
+    } else {
+      db = new SQL.Database();
+    }
+    db.run('PRAGMA foreign_keys = ON');
+    return db;
+  })();
+  return dbReady;
 }
 
-const db = new Database(DB_PATH);
-
-// Enable WAL mode for better concurrent performance
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+// Auto-save to disk after writes
+function saveDb() {
+  if (db) {
+    const data = db.export();
+    const buffer = Buffer.from(data);
+    fs.writeFileSync(DB_PATH, buffer);
+  }
+}
 
 /**
- * Compatibility layer: mimics pg's query interface using better-sqlite3.
+ * Convert sql.js result to row objects
+ */
+function resultToRows(result) {
+  if (!result || result.length === 0) return [];
+  const stmt = result[0];
+  return stmt.values.map(row => {
+    const obj = {};
+    stmt.columns.forEach((col, i) => { obj[col] = row[i]; });
+    return obj;
+  });
+}
+
+/**
+ * Compatibility layer: mimics pg's query interface using sql.js.
  * Converts $1, $2, ... parameterized queries to ? placeholders.
  */
-function query(text, params = []) {
-  // Convert PostgreSQL-style $1, $2 placeholders to SQLite ? placeholders
+async function query(text, params = []) {
+  await getDbPromise();
+
   let convertedText = text;
   const paramMap = [];
 
   if (params.length > 0) {
-    // Find all $N references and build ordered param list
     const refs = [];
     convertedText = text.replace(/\$(\d+)/g, (match, num) => {
       refs.push(parseInt(num, 10));
       return '?';
     });
-    // Map params in order of appearance
     for (const ref of refs) {
-      paramMap.push(params[ref - 1]);
+      paramMap.push(params[ref - 1] === undefined ? null : params[ref - 1]);
     }
   }
 
@@ -71,69 +106,63 @@ function query(text, params = []) {
 
   try {
     if (isSelect) {
-      const rows = db.prepare(trimmed).all(...paramMap);
-      return { rows };
+      const result = db.exec(trimmed, paramMap);
+      return { rows: resultToRows(result) };
     } else if (isInsert) {
-      const info = db.prepare(trimmed).run(...paramMap);
+      db.run(trimmed, paramMap);
+      const changes = db.getRowsModified();
       const tableMatch = trimmed.match(/INSERT\s+INTO\s+(\w+)/i);
+
+      // Try to return the inserted/upserted row
       if (tableMatch) {
-        // For upsert (ON CONFLICT), lastInsertRowid may be 0 on update path
-        // Try to fetch the row using the conflict columns
         const conflictMatch = trimmed.match(/ON\s+CONFLICT\s*\(([^)]+)\)/i);
-        if (conflictMatch && info.changes > 0) {
+        if (conflictMatch && changes > 0) {
           const conflictCols = conflictMatch[1].split(',').map(c => c.trim());
-          // Extract the values for conflict columns from the VALUES clause
-          const valuesMatch = trimmed.match(/VALUES\s*\(([^)]+)\)/i);
-          if (valuesMatch) {
-            const valuePlaceholders = valuesMatch[1].split(',').map(v => v.trim());
-            const insertColsMatch = trimmed.match(/\(([^)]+)\)\s*VALUES/i);
-            if (insertColsMatch) {
-              const insertCols = insertColsMatch[1].split(',').map(c => c.trim());
-              const whereClause = conflictCols.map(col => {
-                const idx = insertCols.indexOf(col);
-                return `${col} = ?`;
-              }).join(' AND ');
-              const whereParams = conflictCols.map(col => {
-                const idx = insertCols.indexOf(col);
-                return idx >= 0 ? paramMap[idx] : null;
-              });
-              try {
-                const rows = db.prepare(`SELECT * FROM ${tableMatch[1]} WHERE ${whereClause}`).all(...whereParams);
-                return { rows, rowCount: info.changes };
-              } catch { /* fallback below */ }
-            }
+          const insertColsMatch = trimmed.match(/\(([^)]+)\)\s*VALUES/i);
+          if (insertColsMatch) {
+            const insertCols = insertColsMatch[1].split(',').map(c => c.trim());
+            const whereClause = conflictCols.map(col => `${col} = ?`).join(' AND ');
+            const whereParams = conflictCols.map(col => {
+              const idx = insertCols.indexOf(col);
+              return idx >= 0 ? paramMap[idx] : null;
+            });
+            try {
+              const result = db.exec(`SELECT * FROM ${tableMatch[1]} WHERE ${whereClause}`, whereParams);
+              saveDb();
+              return { rows: resultToRows(result), rowCount: changes };
+            } catch { /* fallback */ }
           }
         }
-        if (info.lastInsertRowid) {
-          const rows = db.prepare(`SELECT * FROM ${tableMatch[1]} WHERE id = ?`).all(info.lastInsertRowid);
-          return { rows, rowCount: info.changes };
+
+        // Get last inserted row
+        const lastId = db.exec('SELECT last_insert_rowid() as id');
+        const id = resultToRows(lastId)[0]?.id;
+        if (id) {
+          const result = db.exec(`SELECT * FROM ${tableMatch[1]} WHERE id = ?`, [id]);
+          saveDb();
+          return { rows: resultToRows(result), rowCount: changes };
         }
       }
-      return { rows: [], rowCount: info.changes };
+
+      saveDb();
+      return { rows: [], rowCount: changes };
     } else if (isUpdate) {
-      const info = db.prepare(trimmed).run(...paramMap);
-      // Try to return updated row(s) by extracting table and WHERE clause
-      const tableMatch = trimmed.match(/UPDATE\s+(\w+)\s+SET/i);
-      const whereMatch = trimmed.match(/WHERE\s+(.+)$/i);
-      if (tableMatch && whereMatch && info.changes > 0) {
-        try {
-          const selectSql = `SELECT * FROM ${tableMatch[1]} WHERE ${whereMatch[1]}`;
-          const rows = db.prepare(selectSql).all(...paramMap.slice(-countPlaceholders(whereMatch[1])));
-          return { rows, rowCount: info.changes };
-        } catch { /* fallback */ }
-      }
-      return { rows: [], rowCount: info.changes };
+      db.run(trimmed, paramMap);
+      const changes = db.getRowsModified();
+      saveDb();
+      return { rows: [], rowCount: changes };
     } else if (isDelete) {
-      const info = db.prepare(trimmed).run(...paramMap);
-      return { rows: [], rowCount: info.changes };
+      db.run(trimmed, paramMap);
+      const changes = db.getRowsModified();
+      saveDb();
+      return { rows: [], rowCount: changes };
     } else {
-      // DDL or other statements
-      db.exec(trimmed);
+      db.run(trimmed, paramMap);
+      saveDb();
       return { rows: [], rowCount: 0 };
     }
   } catch (err) {
-    // Map SQLite error codes to PostgreSQL-like codes
-    if (err.message.includes('UNIQUE constraint failed')) {
+    if (err.message && err.message.includes('UNIQUE constraint failed')) {
       const pgErr = new Error(err.message);
       pgErr.code = '23505';
       throw pgErr;
@@ -145,19 +174,13 @@ function query(text, params = []) {
 /**
  * Execute raw SQL (for schema setup, etc.)
  */
-function exec(sql) {
-  return db.exec(sql);
+async function exec(sql) {
+  await getDbPromise();
+  db.run(sql);
+  saveDb();
 }
 
-/**
- * Get the raw database instance for advanced operations
- */
-function getDb() {
-  return db;
-}
+function getDb() { return db; }
+function getDbPath() { return DB_PATH; }
 
-function countPlaceholders(str) {
-  return (str.match(/\?/g) || []).length;
-}
-
-module.exports = { query, exec, getDb, db };
+module.exports = { query, exec, getDb, getDbPath, getDbPromise, saveDb };

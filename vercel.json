@@ -2,7 +2,7 @@
   "version": 2,
   "buildCommand": "cd client && npm install && npm run build",
   "outputDirectory": "client/dist",
-  "installCommand": "npm install && cd server && npm install && cd ../client && npm install",
+  "installCommand": "cd server && npm install --build-from-source && cd ../client && npm install",
   "framework": null,
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api" },
@@ -10,7 +10,8 @@
   ],
   "functions": {
     "api/index.js": {
-      "includeFiles": "server/**"
+      "includeFiles": "server/**",
+      "maxDuration": 30
     }
   }
 }
