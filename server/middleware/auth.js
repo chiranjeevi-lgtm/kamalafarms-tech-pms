@@ -8,7 +8,7 @@ const authenticate = (req, res, next) => {
     }
 
     const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'kamalafarms-default-jwt-secret-2026');
 
     req.user = {
       id: decoded.id,
