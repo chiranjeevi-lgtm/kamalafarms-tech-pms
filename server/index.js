@@ -60,9 +60,12 @@ app.use((err, req, res, _next) => {
   });
 });
 
-const PORT = parseInt(process.env.PORT, 10) || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// Only listen when running directly (not in Vercel serverless)
+if (!process.env.VERCEL) {
+  const PORT = parseInt(process.env.PORT, 10) || 5000;
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
 
 module.exports = app;

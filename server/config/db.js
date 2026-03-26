@@ -1,13 +1,23 @@
 const Database = require('better-sqlite3');
 const path = require('path');
+const fs = require('fs');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'agritech.db');
+// On Vercel, filesystem is read-only except /tmp
+// Use /tmp for SQLite database in serverless mode
+const isVercel = !!process.env.VERCEL;
+const DB_PATH = process.env.DB_PATH
+  || (isVercel ? '/tmp/agritech.db' : path.join(__dirname, '..', 'data', 'agritech.db'));
 
 // Ensure data directory exists
-const fs = require('fs');
 const dataDir = path.dirname(DB_PATH);
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
+}
+
+// On Vercel: auto-initialize DB on cold start if it doesn't exist in /tmp
+if (isVercel && !fs.existsSync(DB_PATH)) {
+  console.log('Vercel cold start: initializing database in /tmp...');
+  const setupDb = require('../scripts/setupDb');
 }
 
 const db = new Database(DB_PATH);

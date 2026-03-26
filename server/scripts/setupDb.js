@@ -4,7 +4,9 @@ const path = require('path');
 const Database = require('better-sqlite3');
 
 function setupDatabase() {
-  const dbPath = process.env.DB_PATH || path.join(__dirname, '..', 'data', 'agritech.db');
+  const isVercel = !!process.env.VERCEL;
+  const dbPath = process.env.DB_PATH
+    || (isVercel ? '/tmp/agritech.db' : path.join(__dirname, '..', 'data', 'agritech.db'));
 
   // Ensure data directory exists
   const dataDir = path.dirname(dbPath);
@@ -145,4 +147,8 @@ function convertPgToSqlite(sql) {
     ;
 }
 
-setupDatabase();
+// Run directly or export for Vercel cold-start
+if (require.main === module) {
+  setupDatabase();
+}
+module.exports = setupDatabase;
