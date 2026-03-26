@@ -31,9 +31,15 @@ app.use('/api/reviews', reviewRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/gradings', gradingRoutes);
 
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.1' });
+// Health check with DB debug
+app.get('/api/health', async (req, res) => {
+  try {
+    const { query } = require('./config/db');
+    const result = await query('SELECT COUNT(*) as count FROM users');
+    res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.2', db_users: result.rows[0]?.count });
+  } catch (err) {
+    res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.2', db_error: err.message });
+  }
 });
 
 // Serve frontend in production
