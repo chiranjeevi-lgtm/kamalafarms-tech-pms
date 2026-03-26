@@ -33,7 +33,7 @@ app.use('/api/gradings', gradingRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '1.0.1' });
 });
 
 // Serve frontend in production
