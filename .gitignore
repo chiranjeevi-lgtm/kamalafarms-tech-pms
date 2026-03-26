@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Database (SQLite)
+server/data/*.db
+server/data/*.db-wal
+server/data/*.db-shm
+
+# Environment
+.env
+.env.local
+.env.production
+server/.env
+
+# Build output
+client/dist/
+client/build/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Claude Code
+.claude/
