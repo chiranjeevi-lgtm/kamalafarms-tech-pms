@@ -11,6 +11,7 @@ const incentiveRoutes = require('./routes/incentives');
 const reviewRoutes = require('./routes/reviews');
 const dashboardRoutes = require('./routes/dashboard');
 const gradingRoutes = require('./routes/gradings');
+const uploadRoutes = require('./routes/upload');
 
 const app = express();
 
@@ -30,6 +31,7 @@ app.use('/api/incentives', incentiveRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/gradings', gradingRoutes);
+app.use('/api/upload', uploadRoutes);
 
 // Health check with DB debug
 app.get('/api/health', async (req, res) => {
